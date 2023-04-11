@@ -1,5 +1,6 @@
 #pragma once
 #include "Log.hpp"
+#include "Protocol.hpp"
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <iostream>
@@ -20,13 +21,19 @@ public:
     int sock_; //标识当前事件的socket
     Reactor* pr_; //指向当前Event被加入到的Reactor模型
 
-    //读/写/异常回调函数
+    //读/写/异常回调函数，类型一定是 void(Event&)，参数就是当前时间的Event
     std::function<void(Event&)> recvCallback_;
     std::function<void(Event&)> sendCallback_;
     std::function<void(Event&)> errorCallback_;
 
     std::string inbuffer_;  //读缓冲区
     std::string outbuffer_; //写缓冲区
+
+    //修改！！！：可以将Event改成模板类，并且把ChatMessage作为模板参数
+    //好处是，recvMessage_的内容实际上和具体的协议有关，而这个Reactor服务器理论上是和协议解耦的
+    //如果这里直接放一个ChatMessage类型的成员变量，那么完全起不到解耦的效果
+    ChatMessage recvMessage_;
+    //ChatMessage sendMessage_;
 
 public:
     Event(int sock = -1, Reactor* pr = nullptr):sock_(sock), pr_(pr)
@@ -52,6 +59,10 @@ public:
     {
         errorCallback_ = err_tem;
     }
+
+    //疑问？？？Event类应该会自动生成移动构造函数吧？因为ChatMessage应该也会自动生成移动构造
+    //修改？？？是否需要自己添加移动构造，如果使用模板类，怎么做到移动构造
+
 };
 
 //Reactor模型，包括两部分：(1)一个Epoll模型；(2)自己进行连接管理的eventsMap_
@@ -61,7 +72,7 @@ class Reactor
 private:
     int epfd_; //Reactor模型对应的Epoll模型
     std::unordered_map<int, Event> eventsMap_; 
-    // //Reactor模型自己对连接的管理，表示一个socket到其对应的连接事件Event的映射
+    // Reactor模型自己对连接的管理，表示一个socket到其对应的连接事件Event的映射
 
 public:
     Reactor():epfd_(-1)

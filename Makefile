@@ -1,6 +1,7 @@
 bin=server
 src=server.cpp single.cpp
-LD_FLAGS=-std=c++17 -lpthread
+LD_FLAGS=-std=c++2a -lpthread
+# LD_FLAGS=-std=c++11
 cc=g++
 
 $(bin):$(src)

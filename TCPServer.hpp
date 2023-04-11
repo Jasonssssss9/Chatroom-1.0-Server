@@ -45,7 +45,7 @@ public:
     //使用reactor模型，首先需将listen socket注册到reactor模型中
     int GetLinstenSocket()
     {
-        int listen_sock = Sock::Socket();
+        int listen_sock = Sock::Socket(1);
         Sock::SetNonBlock(listen_sock);   //使用ET模式，需要设置非阻塞模式
         Sock::Bind(listen_sock, port_);
         Sock::Listen(listen_sock);
