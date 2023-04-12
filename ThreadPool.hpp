@@ -48,6 +48,7 @@ private:
 
                         task = move(taskQueue_.front());
                         taskQueue_.pop();
+                        LOG(INFO, "Pop a task from task_queue");
                     }
 
                     //执行任务
@@ -57,10 +58,10 @@ private:
         }
     }
 
+public:
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
 
-public:
     static ThreadPool* GetInstance(int num = THREAD_NUM)
     {
         static std::mutex mtx;
@@ -73,19 +74,6 @@ public:
             }
         }
         return ptp_;
-    }
-
-    static void DelInstance()
-    {
-        static std::mutex mtx;
-        if(ptp_ != nullptr){
-            {
-                std::unique_lock<std::mutex> u_mtx(mtx);
-                if(ptp_ != nullptr){
-                    delete ptp_;
-                }
-            }
-        }
     }
 
     ~ThreadPool()
@@ -115,6 +103,7 @@ public:
         }
 
         cv_.notify_one(); //唤醒一个线程
+        LOG(INFO, "Push a task to task_queue");
 
         return ft;
     }

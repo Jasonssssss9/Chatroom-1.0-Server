@@ -33,7 +33,7 @@ public:
     //好处是，recvMessage_的内容实际上和具体的协议有关，而这个Reactor服务器理论上是和协议解耦的
     //如果这里直接放一个ChatMessage类型的成员变量，那么完全起不到解耦的效果
     ChatMessage recvMessage_;
-    //ChatMessage sendMessage_;
+    ChatMessage sendMessage_;
 
 public:
     Event(int sock = -1, Reactor* pr = nullptr):sock_(sock), pr_(pr)
@@ -62,7 +62,6 @@ public:
 
     //疑问？？？Event类应该会自动生成移动构造函数吧？因为ChatMessage应该也会自动生成移动构造
     //修改？？？是否需要自己添加移动构造，如果使用模板类，怎么做到移动构造
-
 };
 
 //Reactor模型，包括两部分：(1)一个Epoll模型；(2)自己进行连接管理的eventsMap_

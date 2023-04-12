@@ -17,19 +17,6 @@ public:
     TcpServer(const TcpServer&) = delete;
     TcpServer& operator=(const TcpServer&) = delete;
 
-    // static TcpServer* GetInstance(uint16_t port)
-    // {
-    //     static pthread_mutex_t pt_mutex = PTHREAD_MUTEX_INITIALIZER;
-    //     if(pt_  == nullptr){
-    //         pthread_mutex_lock(&pt_mutex);
-    //         if(pt_ == nullptr){
-    //             pt_ = new TcpServer(port);
-    //         }
-    //         pthread_mutex_unlock(&pt_mutex);
-    //     }
-    //     return pt_;
-    // }
-
     static TcpServer* GetInstance(uint16_t  port)
     {
         static std::mutex mtx;
@@ -42,31 +29,6 @@ public:
             }
         }
         return pt_;
-    }
-
-    // static void DelInstance()
-    // {
-    //     static pthread_mutex_t pt_mutex = PTHREAD_MUTEX_INITIALIZER;
-    //     if(pt_ != nullptr){
-    //         pthread_mutex_lock(&pt_mutex);
-    //         if(pt_ != nullptr){
-    //             delete pt_;
-    //         }
-    //         pthread_mutex_unlock(&pt_mutex);
-    //     }
-    // }
-
-    static void DelInstance()
-    {
-        static std::mutex mtx;
-        if(pt_ != nullptr){
-            {
-                std::unique_lock<std::mutex> u_lock(mtx);
-                if(pt_ != nullptr){
-                    delete pt_;
-                }
-            }
-        }
     }
 
     //进行网络连接，先创建listen socket并bind，listen

@@ -107,10 +107,10 @@ public:
         // event.inbuffer_.clear();
         // event.pr_->EnableReadWrite(event.sock_, true, true);
 
-        Task task_message([&]{
+        Task task([&]{
             Protocol::GetPerseMessage(event);
         });
-        ThreadPool::GetInstance()->AddTask(task_message);
+        ThreadPool::GetInstance()->AddTask(task);
     }
 
     //event对应写事件

@@ -55,14 +55,17 @@ public:
         }
         return 0;
     }
-};
 
-
-
-//进行应用层的管理内容
-class Chatroom
-{
-private:
-
+    void Clear()
+    {
+        method_.clear();
+        status_.clear();
+        version_.clear();
+        headers_.clear();
+        iniLine_.clear();
+        body_.clear();
+        blank_.clear();
+        headerMap_.clear();
+    }
 };
 
