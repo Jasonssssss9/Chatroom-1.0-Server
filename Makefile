@@ -1,5 +1,5 @@
 bin=server
-src=server.cpp single.cpp
+src=server.cpp single.cpp protocol.cpp
 LD_FLAGS=-std=c++2a -lpthread
 # LD_FLAGS=-std=c++11
 cc=g++

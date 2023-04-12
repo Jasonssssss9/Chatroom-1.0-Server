@@ -1,6 +1,6 @@
 #pragma once
 #include "Log.hpp"
-#include "Protocol.hpp"
+#include "ChatMessage.hpp"
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <iostream>

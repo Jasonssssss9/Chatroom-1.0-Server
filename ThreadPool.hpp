@@ -12,7 +12,7 @@
 #include <queue>
 
 using Task = std::function<void()>;
-#define MAX_NUM 10
+#define THREAD_NUM 10
 
 class ThreadPool
 {
@@ -23,8 +23,9 @@ private:
     std::condition_variable cv_;
     std::atomic<bool> run_; //线程池运行为true，反之为false
 
-public:
-    ThreadPool(int num = MAX_NUM): run_(true)
+    static ThreadPool* ptp_;
+
+    ThreadPool(int num = THREAD_NUM): run_(true)
     {
         //构造函数中直接启动num个线程
         for(int i = 0;i < num;i++){
@@ -56,6 +57,37 @@ public:
         }
     }
 
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
+public:
+    static ThreadPool* GetInstance(int num = THREAD_NUM)
+    {
+        static std::mutex mtx;
+        if(ptp_ == nullptr){
+            {
+                std::unique_lock<std::mutex> u_mtx(mtx);
+                if(ptp_ == nullptr){
+                    ptp_ = new ThreadPool(THREAD_NUM);
+                }
+            }
+        }
+        return ptp_;
+    }
+
+    static void DelInstance()
+    {
+        static std::mutex mtx;
+        if(ptp_ != nullptr){
+            {
+                std::unique_lock<std::mutex> u_mtx(mtx);
+                if(ptp_ != nullptr){
+                    delete ptp_;
+                }
+            }
+        }
+    }
+
     ~ThreadPool()
     {
         run_ = false;
@@ -66,7 +98,6 @@ public:
             }
         }
     }
-
 
     template<class F, class ... Args>
     auto AddTask(F&& f, Args&&... args) ->std::future<decltype(f(args...))>
