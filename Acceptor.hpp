@@ -34,7 +34,7 @@ public:
                 new_event.RegisterError(Handler::Errorer);
 
                 listen_event.pr_->AddEvent(new_event, EPOLLIN | EPOLLET);
-                LOG(INFO, std::string("Add new socket to reactor")+std::to_string(sock));
+                LOG(INFO, std::string("Add new socket to reactor: ")+std::to_string(sock));
             }
             else{
                 if(errno == EINTR){

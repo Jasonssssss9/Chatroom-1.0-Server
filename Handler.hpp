@@ -138,7 +138,32 @@ public:
     //event对应异常事件，直接关闭连接
     static void Errorer(Event& event)
     {
+        const auto& short_sock_map = Chatroom::GetInstance()->GetShortSock();
+        const auto& long_sock_map = Chatroom::GetInstance()->GetLongSock();
+        auto it1 = short_sock_map.find(event.sock_);
+        auto it2 = long_sock_map.find(event.sock_);
+        if(it1 != short_sock_map.end()){
+            std::cout << "11111" << std::endl;
+            //是短链接
+            Chatroom::GetInstance()->ShortSockErase(event.sock_);
+        }
+        else if(it2 != long_sock_map.end()){
+            std::cout << "22222" << std::endl;
+            //是长连接
+            //注意，长连接关闭，对方短连接可能关也可能没关，但是不管怎样服务器都需要把短连接的报文都发出去
+            //  也就是服务器要完成自己的任务，对方怎么处理需要客户端来考虑
+            //  即长连接关闭，不需要同时也关闭短连接，短链接自己会关
+            //并且还有心跳机制保证所有连接退出
+            Chatroom::GetInstance()->OnlineErase(it2->second);
+            Chatroom::GetInstance()->LongSockErase(event.sock_);
+        }
+        else{
+            std::cout << "33333" << std::endl;
+            //说明连接还没建立，直接退出
+        }
+
         event.pr_->DelEvent(event.sock_);
     }
+
 
 };

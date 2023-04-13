@@ -56,12 +56,18 @@ int Protocol::GetBody(int len, const std::string& in, std::string& out)
 //注册
 void Protocol::SignUp(Event& event)
 {   
+    //直接给登录状态分配一个用户名为"#####"的短连接
+    Chatroom::GetInstance()->ShortSockInsert(event.sock_, SIGN_UP_NAME);
+    std::cout << "#######: " << event.sock_ << std::endl;
+    std::cout << "#######: " << Chatroom::GetInstance()->GetShortSock().at(event.sock_) << std::endl;
+    
     //确定对方希望注册的用户名
     auto it = event.recvMessage_.headerMap_.find("User");
     std::string name;
     if(it == event.recvMessage_.headerMap_.end()){
         //差错处理，返回格式错误响应
         event.sendMessage_.status_ = "401";
+        event.sendMessage_.headerMap_.erase("Return");
 
         LOG(WARNING, "Wrong fromatioin");
         return;
@@ -91,10 +97,9 @@ void Protocol::SignUp(Event& event)
     password = it->second;
 
     //插入到users中
-    auto& users = Chatroom::GetInstance()->GetUsersInfo();
-    users.insert(std::make_pair(name, password));
+    Chatroom::GetInstance()->UsersInsert(name, password);
 
-    LOG(INFO, std::string("Sign up, name: ")+name+std::string(", password: ")+users.at(name));
+    LOG(INFO, std::string("Sign up, name: ")+name+std::string(", password: ")+password);
 }
 
 //登录
@@ -108,25 +113,25 @@ void Protocol::SignIn(Event& event)
     if(it1 == event.recvMessage_.headerMap_.end() || it2 == event.recvMessage_.headerMap_.end()){
         //差错处理，返回格式错误响应
         event.sendMessage_.status_ = "401";
+        event.sendMessage_.headerMap_.erase("Return");
 
         LOG(WARNING, "Wrong fromatioin");
         return;
     }
     name = it1->second;
     password = it2->second;
-    std::cout << "######: " << name;
 
     if(!IsUserExist(name)){
-        //差错处理，返回当前用户不存在
-        event.sendMessage_.headerMap_.at("Return") = "wrong";
-        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "no_user"));
+        //当前用户不存在，返回402报文
+        event.sendMessage_.headerMap_.erase("Return");
+        event.sendMessage_.status_ = "402";
 
         LOG(WARNING, std::string("No such user, name: ")+name);
         return;
     }
 
     //和服务器存储的密码进行对比
-    const std::string& stored_pw = Chatroom::GetInstance()->GetUsersInfo().at(name);
+    const std::string& stored_pw = Chatroom::GetInstance()->GetUsers().at(name);
     if(password != stored_pw){
         //差错处理，返回密码错误
         event.sendMessage_.headerMap_.at("Return") = "wrong";
@@ -137,22 +142,78 @@ void Protocol::SignIn(Event& event)
     }
 
     //将当前用户设置为在线状态
-    auto& online = Chatroom::GetInstance()->GetOnlineInfo();
+    const auto& online = Chatroom::GetInstance()->GetOnline();
     auto it3 = online.find(name);
     if(it3 == online.end()){
         //如果还没登录
-        online.insert(std::make_pair(name, event.sock_));
-    }
-    //如果已经登录，不用设置，依然返回正常登录
+        Chatroom::GetInstance()->OnlineInsert(name, event.sock_);
 
-    LOG(INFO, std::string("One user is signing in, name: ")+name);
+        //设置长连接
+        Chatroom::GetInstance()->LongSockInsert(event.sock_, name);
+        //还要判断这个连接是不是已经被设置为长连接，因为可能之前注册也用的这个连接
+        auto it4 = Chatroom::GetInstance()->GetShortSock().find(event.sock_);
+        if(it4 != Chatroom::GetInstance()->GetShortSock().end()){
+            Chatroom::GetInstance()->ShortSockErase(event.sock_);
+        }
+
+        LOG(INFO, std::string("One user is signing in, name: ")+name);
+    }
+    else{
+        //如果已经登录，返回重复登录报文
+        event.sendMessage_.headerMap_.at("Return") = "wrong";
+        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "repeat_login"));
+
+        LOG(WARNING, std::string("Repeat login, name: ")+name);
+    }
+}
+
+//登出
+void Protocol::SignOut(Event& event)
+{
+    //在这里只需要处理登录管理的问题，连接的管理是底层连接管理的问题，这里不需要处理
+    //理论上连接都会直接由客户端关闭，因此底层会自动关闭连接
+    std::string name;
+    auto it1 = event.recvMessage_.headerMap_.find("User");
+    if(it1 == event.recvMessage_.headerMap_.end()){
+        //没找到，格式错误，返回错误报文
+        //这时其实没必要也没法修改登录状态，当登录连接关闭时底层会自动修改登录状态为离线
+        event.sendMessage_.headerMap_.erase("Return");
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong fromatioin");
+        return;
+    }
+    name = it1->second;
+
+    const auto& online = Chatroom::GetInstance()->GetOnline();
+    auto it2 = online.find(name);
+    if(it2 == online.end()){
+        //如果根本没有这个用户
+        auto it3 = Chatroom::GetInstance()->GetUsers().find(name);
+        if(it3 == Chatroom::GetInstance()->GetUsers().end()){
+            //说明没有这个用户，返回402报文
+            event.sendMessage_.headerMap_.erase("Return");
+            event.sendMessage_.status_ = "402";
+            
+            LOG(WARNING, std::string("No such user, nane: ")+name);
+        }
+        //本身不在线，直接不用管，正常返回报文
+        return;
+    }
+
+    //本身就在线，那么删除在线状态
+    Chatroom::GetInstance()->OnlineErase(name);
+    //这里删除了，底层关闭登录长连接的时候就不会删除
+
+    //删除长连接映射
+    Chatroom::GetInstance()->LongSockErase(event.sock_);
 }
 
 
 //当前name存在，即name对应一个user，返回true；反之返回false
 bool Protocol::IsUserExist(std::string name)
 {
-    const auto& users = Chatroom::GetInstance()->GetUsersInfo();
+    const auto& users = Chatroom::GetInstance()->GetUsers();
     auto it = users.find(name);
     if(it != users.end()){
         return true;
@@ -166,7 +227,7 @@ std::pair<bool, std::string> Protocol::GetPassword(std::string name)
     if(!IsUserExist(name)){
         return std::make_pair(false, std::string());
     }
-    const auto& users = Chatroom::GetInstance()->GetUsersInfo();
+    const auto& users = Chatroom::GetInstance()->GetUsers();
     std::string password = users.at(name);
     return std::make_pair(true, password);
 }
@@ -174,7 +235,7 @@ std::pair<bool, std::string> Protocol::GetPassword(std::string name)
 //如果用户已经登陆，返回true；反之返回false
 bool Protocol::IsSignIn(std::string name)
 {
-    const auto& online = Chatroom::GetInstance()->GetOnlineInfo();
+    const auto& online = Chatroom::GetInstance()->GetOnline();
     auto it3 = online.find(name);
     if(it3 == online.end()){
         return false;
@@ -299,23 +360,26 @@ void Protocol::GetPerseMessage(Event& event)
         }
     }
 
-    //如果收到Req报文，构建ReqHandler任务；如果收到Res报文，构建ResHandler任务
-    //将任务push到任务队列中，再退出
-    if(event.recvMessage_.method_ == "REQ"){
-        Task task([&event]{
-            ReqHandler(event);
-        });
-        ThreadPool::GetInstance()->AddTask(task);
-    }
-    else if(event.recvMessage_.method_ == "RES"){
-        Task task([&event]{
-            ResHandler(event);
-        });
-        ThreadPool::GetInstance()->AddTask(task);        
-    }
-    else{
-        LOG(ERROR, "Wrong method");
-        //差错处理，返回错误报文
+    //保证上面都处理好了，再进行下一步任务
+    if((event.recvMessage_.blank_.size() != 0) && (event.recvMessage_.iniLine_.size() != 0) && (event.recvMessage_.method_.size() != 0) && (event.recvMessage_.body_.size() == atoi(event.recvMessage_.headerMap_.at("Content-Length").c_str()))){ 
+        //如果收到Req报文，构建ReqHandler任务；如果收到Res报文，构建ResHandler任务
+        //将任务push到任务队列中，再退出
+        if(event.recvMessage_.method_ == "REQ"){
+            Task task([&event]{
+                ReqHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);
+        }
+        else if(event.recvMessage_.method_ == "RES"){
+            Task task([&event]{
+                ResHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);        
+        }
+        else{
+            LOG(ERROR, "Wrong method");
+            //差错处理，返回错误报文
+        }
     }
 }
 
@@ -350,14 +414,20 @@ void Protocol::ReqHandler(Event& event)
             }
             else if(status == "030"){
                 //用户退出
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "031";
+                event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+                Protocol::SignOut(event);
             }
             else{
-
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "401";
             }
             break;
         }
         //消息相关
         case '1':{
+            
             break;
         }
         //群聊相关
