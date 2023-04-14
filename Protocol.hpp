@@ -2,10 +2,14 @@
 #include "Log.hpp"
 #include "Reactor.hpp"
 #include "ThreadPool.hpp"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <fstream>
 
 #define LINE_END "\r\n"
 #define VERSION "JCHAT/1.0"
@@ -19,6 +23,7 @@ private:
     std::mutex onlineMtx_;
     std::mutex shortSockMtx_;
     std::mutex longSockMtx_;
+    std::mutex offlineMtx_;
 
     //易错，注意对一下所有对象操作时必须加锁，因为stl容器不能保证线程安全
 
@@ -33,6 +38,10 @@ private:
 
     std::unordered_map<int, std::string> longSock_;
     //管理所有的长连接，即登陆时对应的连接
+
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> offline_;
+    //key为用户名，建立该用户到其所有离线消息的映射，value也为一个映射，first为发送者名，second为与first对应的离线消息个数
+    
 
     Chatroom()
     {}
@@ -124,7 +133,7 @@ public:
 
     const std::unordered_map<int, std::string>& GetLongSock()
     {
-        return  longSock_;
+        return longSock_;
     }
 
     void LongSockInsert(int sock, const std::string name)
@@ -137,6 +146,49 @@ public:
     {
         std::unique_lock<std::mutex> u_mtx(longSockMtx_);
         longSock_.erase(sock);
+    }
+
+    const std::unordered_map<std::string, std::unordered_map<std::string, int>>& GetOffline()
+    {
+        return offline_;
+    }
+
+    //name为离线接收者用户名，sender为对应发送者用户名
+    void OfflineInsert(std::string name, std::string sender)
+    {
+        std::unique_lock<std::mutex> u_mtx(offlineMtx_);
+        auto it1 = offline_.find(name);
+        if(it1 == offline_.end()){
+            std::unordered_map<std::string, int> tmp;
+            tmp.insert(std::make_pair(sender, 1));
+            offline_.insert(std::make_pair(name, tmp));
+        }
+        else{
+            auto it2= offline_.at(name).find(sender);
+            if(it2 == offline_.at(name).end()){
+                offline_.at(name).insert(std::make_pair(sender, 1));
+            }
+            else{
+                offline_.at(name).at(sender)++;
+            }
+        }
+    }
+
+    void OfflineErase(std::string name, std::string sender)
+    {
+        std::unique_lock<std::mutex> u_mtx(offlineMtx_);
+        auto it1 = offline_.find(name);
+        if(it1 != offline_.end()){
+            auto it2= offline_.at(name).find(sender);
+            if(it2 != offline_.at(name).end()){
+                if(offline_.at(name).at(sender) > 1){
+                    offline_.at(name).at(sender)--;
+                }
+                else{
+                    offline_.at(name).erase(sender);
+                }
+            }
+        }    
     }
     
 };
@@ -156,15 +208,22 @@ private:
     static std::pair<bool, std::string> GetPassword(std::string name);
     static bool IsSignIn(std::string name);
 
-    static void BuildResMessage(Event& event);
+    static void BuildMessage(Event& event);
     static void ClearEvent(Event& event);
-public:
-    static void GetPerseMessage(Event& event);
-    
+
+    static bool IsFileExist(const std::string&);
+    static bool ReadFile(const std::string& path, std::vector<std::vector<std::string>>& out, int n);
+    static void AppendFile(const std::string& path, const std::vector<std::string>& in);
+    static void ClearFile(const std::string& path);
+
+    static Event& SingleMessage(Event& event, int& ret);
+    static int GroupMessage(Event& event);
+
     static void ReqHandler(Event& event);
     static void ResHandler(Event& events);
 
-    static void SendResponse(Event& event);
-    static void SendInform(Event& event);
+    static void SendHandler(Event& event);
 
+public:
+    static void GetPerseMessage(Event& event);
 };

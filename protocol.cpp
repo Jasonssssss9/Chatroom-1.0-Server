@@ -243,7 +243,8 @@ bool Protocol::IsSignIn(std::string name)
     return true;
 }
 
-void Protocol::BuildResMessage(Event& event)
+//构建报文
+void Protocol::BuildMessage(Event& event)
 {
     auto& ini_line = event.sendMessage_.iniLine_;
     auto& headers = event.sendMessage_.headers_;
@@ -276,11 +277,153 @@ void Protocol::BuildResMessage(Event& event)
     //body已经被设置好，此时只需要发送即可
 }
 
+//清空event的inbuffer,recvMessage,sendMessage
 void Protocol::ClearEvent(Event& event)
 {
     event.inbuffer_.clear();
     event.recvMessage_.Clear();
     event.sendMessage_.Clear();
+}
+
+//判断文件是否存在
+bool Protocol::IsFileExist(const std::string& path)
+{
+    struct stat buf;
+    if(stat(path.c_str(), &buf) == 0){
+        return true;
+    }
+    return false;
+}
+
+//将文件内容按time，sender，receiver，data格式全部读入out中，一共n个记录
+//其中前三个部分没有\n，后三个部分有\n
+bool Protocol::ReadFile(const std::string& path, std::vector<std::vector<std::string>>& out, int n)
+{
+    if(!IsFileExist(path)){
+        return false;
+    }
+
+    std::fstream fread;
+    fread.open(path, std::ios::in);
+
+    out.resize(n);
+
+    for(int i = 0;i < n;i++){
+        out[i].resize(5);
+        std::getline(fread, out[i][0]);
+        std::getline(fread, out[i][1]);
+        std::getline(fread, out[i][2]);
+        std::getline(fread, out[i][3]);
+        //没有读\n
+        int len = std::atoi(out[i][3].c_str());
+
+        std::string data;
+        while(std::getline(fread, data)){
+            data += "\n";
+            out[i][4] += data;
+            len -= data.size();
+            if(len <= 0){
+                break;
+            }
+        };
+    }
+
+    fread.close();
+    return true;
+}
+
+//向文件加追加一个聊天信息，如果文件没有创建则在这里创建
+void Protocol::AppendFile(const std::string& path, const std::vector<std::string>& in)
+{
+    std::fstream fapp;
+    fapp.open(path, std::ios::app);
+    fapp << in[0];
+    fapp << in[1];
+    fapp << in[2];
+    fapp << in[3];
+    fapp << in[4];
+    fapp.close();
+}
+
+void Protocol::ClearFile(const std::string& path)
+{
+    if(IsFileExist(path)){
+        std::fstream fclear;
+        fclear.open(path, std::ios::out);
+    }
+}
+
+//如果需要发送错误报文，则设置ret为-1；正确发送通知报文，则设置ret为0，如果对方离线，则返回1
+Event& Protocol::SingleMessage(Event& event, int& ret)
+{
+    //获取报头数据
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_peer = header_map.find("Peer");
+    auto it_time = header_map.find("Time");
+    auto it_content_len = header_map.find("Content-Length");
+    if(it_user == header_map.end() || it_peer == header_map.end() || it_time == header_map.end() || it_content_len == header_map.end()){
+        //如果没找到User或Peer和Time
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong formation");
+        ret  = -1;
+        return event;
+    }
+    std::string sender_name = it_user->second;
+    //判断是否登录
+    if(!IsSignIn(sender_name)){
+        //如果没登陆，直接返回403报文
+        event.sendMessage_.status_ = "403";
+
+        LOG(WARNING, "Not sign in");
+        ret = -1;
+        return event;
+    }
+
+    std::string peer_name = it_peer->second;
+    std::string time = it_time->second;
+    int content_len = std::atoi(it_content_len->second.c_str());
+    
+    auto it_online = Chatroom::GetInstance()->GetOnline().find(peer_name);
+    if(it_online == Chatroom::GetInstance()->GetOnline().end()){
+        //对方不在线
+        //把消息存在文件中
+        Chatroom::GetInstance()->OfflineInsert(peer_name, sender_name);
+        
+
+        //构建响应报文  
+        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "offline")) ;
+        ret = 1;
+        return event;  
+    }
+    else{
+        //对方在线，构建通知
+        int peer_sock = it_online->second;
+        Event& send_ev = event.pr_->GetEvent(peer_sock);
+
+        send_ev.sendMessage_.method_ = "INF";
+        send_ev.sendMessage_.status_ = "150";
+        send_ev.sendMessage_.version_ = "CHAT\1.0";
+
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Receiver", peer_name));
+        send_ev.sendMessage_.body_ = std::move(event.recvMessage_.body_); //直接移动拷贝，原来的消息就不用了
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(send_ev.sendMessage_.body_.size())));
+
+        //构建成功响应
+        //为了简单起见，默认不会失败，对方在线则直接转发并且发送响应
+        //！！！这里可以改进
+        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+        
+        return send_ev;
+    }    
+}
+
+int Protocol::GroupMessage(Event& event)
+{
+    return 0;
 }
 
 
@@ -403,31 +546,68 @@ void Protocol::ReqHandler(Event& event)
                 event.sendMessage_.status_ = "011";
                 //先假设没有问题，设置Return为Right
                 event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
-                Protocol::SignUp(event);
+                SignUp(event);
             }
             else if(status == "020"){
                 //用户登录
                 event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "021";
                 event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
-                Protocol::SignIn(event);
+                SignIn(event);
             }
             else if(status == "030"){
                 //用户退出
                 event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "031";
                 event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
-                Protocol::SignOut(event);
+                SignOut(event);
             }
             else{
                 event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "401";
             }
+
+            //建立发送Res报文任务并加入任务队列
+            Task task([&event]{
+                SendHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);
             break;
         }
         //消息相关
         case '1':{
-            
+            if(status == "110"){
+                //单发消息请求，之后进行通知
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "111";
+                int ret = 0;
+                Event& send_ev = SingleMessage(event,ret);
+                if(ret == 0){
+                    //直接发送通知报文转发消息
+                    Task task([&send_ev]{
+                        SendHandler(send_ev);
+                    });
+                    ThreadPool::GetInstance()->AddTask(task);
+                }
+                //无论什么情况，都要发送响应
+                Task task([&event]{
+                    SendHandler(event);
+                });
+                ThreadPool::GetInstance()->AddTask(task);
+            }
+            else if(status == "120"){
+                //群发消息请求，之后进行通知
+            }
+            else{
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "401";
+
+                //建立发送Res报文任务并加入任务队列
+                Task task([&event]{
+                    SendHandler(event);
+                });
+                ThreadPool::GetInstance()->AddTask(task);
+            }
             break;
         }
         //群聊相关
@@ -443,12 +623,6 @@ void Protocol::ReqHandler(Event& event)
             break;
         }
     }
-
-    //建立发送Res报文任务并加入任务队列
-    Task task([&event]{
-        SendResponse(event);
-    });
-    ThreadPool::GetInstance()->AddTask(task);
 }
 
 void Protocol::ResHandler(Event& event)
@@ -457,12 +631,12 @@ void Protocol::ResHandler(Event& event)
 }
 
 
-void Protocol::SendResponse(Event& event)
+void Protocol::SendHandler(Event& event)
 {
     LOG(INFO, "Send response");
 
     //构建响应报文
-    BuildResMessage(event);
+    BuildMessage(event);
 
     //发送响应报文，只需要将内容放入outbuffer，并且设置写使能即可
     event.outbuffer_ += event.sendMessage_.iniLine_;
@@ -477,9 +651,4 @@ void Protocol::SendResponse(Event& event)
     //清除event内容，只留下outbuffer，其内容会在发送时清除
     //保证等到下一次接收时，event除了sock_和pr_，其他都是空的
     ClearEvent(event);
-}
-
-void Protocol::SendInform(Event& event)
-{
-
 }

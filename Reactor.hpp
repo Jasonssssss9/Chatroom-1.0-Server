@@ -3,6 +3,7 @@
 #include "ChatMessage.hpp"
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <cassert>
 #include <iostream>
 #include <string>
 #include <unordered_set>
@@ -94,6 +95,13 @@ public:
         if(epfd_ >= 0){
             close(epfd_);
         }
+    }
+
+    Event& GetEvent(int sock)
+    {
+        auto it = eventsMap_.find(sock);
+        assert(it != eventsMap_.end());
+        return it->second;
     }
 
     //将一个事件ev加入到当前Reactor模型中，events为需要监测的事件

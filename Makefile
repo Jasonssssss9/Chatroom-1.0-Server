@@ -6,7 +6,9 @@ cc=g++
 
 $(bin):$(src)
 	$(cc) -o $@ $^ $(LD_FLAGS)
+	mkdir message
 
 .PHONY:clean
 clean:
 	rm -f $(bin)
+	rm -r message
