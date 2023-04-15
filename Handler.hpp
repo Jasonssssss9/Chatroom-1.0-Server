@@ -143,12 +143,10 @@ public:
         auto it1 = short_sock_map.find(event.sock_);
         auto it2 = long_sock_map.find(event.sock_);
         if(it1 != short_sock_map.end()){
-            std::cout << "11111" << std::endl;
             //是短链接
             Chatroom::GetInstance()->ShortSockErase(event.sock_);
         }
         else if(it2 != long_sock_map.end()){
-            std::cout << "22222" << std::endl;
             //是长连接
             //注意，长连接关闭，对方短连接可能关也可能没关，但是不管怎样服务器都需要把短连接的报文都发出去
             //  也就是服务器要完成自己的任务，对方怎么处理需要客户端来考虑
@@ -158,7 +156,6 @@ public:
             Chatroom::GetInstance()->LongSockErase(event.sock_);
         }
         else{
-            std::cout << "33333" << std::endl;
             //说明连接还没建立，直接退出
         }
 

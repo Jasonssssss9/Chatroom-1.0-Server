@@ -58,8 +58,6 @@ void Protocol::SignUp(Event& event)
 {   
     //直接给登录状态分配一个用户名为"#####"的短连接
     Chatroom::GetInstance()->ShortSockInsert(event.sock_, SIGN_UP_NAME);
-    std::cout << "#######: " << event.sock_ << std::endl;
-    std::cout << "#######: " << Chatroom::GetInstance()->GetShortSock().at(event.sock_) << std::endl;
     
     //确定对方希望注册的用户名
     auto it = event.recvMessage_.headerMap_.find("User");
@@ -154,6 +152,77 @@ void Protocol::SignIn(Event& event)
         auto it4 = Chatroom::GetInstance()->GetShortSock().find(event.sock_);
         if(it4 != Chatroom::GetInstance()->GetShortSock().end()){
             Chatroom::GetInstance()->ShortSockErase(event.sock_);
+        }
+
+        //如果该用户有需要通知的群聊创建信息
+        const auto& offline_groups = Chatroom::GetInstance()->GetOfflineGroup();
+        auto it_group = offline_groups.find(name);
+        if(it_group != offline_groups.end()){
+            //说明有群聊创建信息
+            std::string tem;
+            for(auto group_name : it_group->second){
+                //每一个创建的群聊都要考虑
+                tem += group_name;
+                tem += "$";
+                //从group_name获取该群聊所有用户的信息
+                const auto& groups = Chatroom::GetInstance()->GetGroups();
+                auto other_set = groups.at(group_name);
+                for(auto other : other_set){
+                    tem += other;
+                    tem += "$";
+                }
+                tem.pop_back();
+                tem += " ";
+            }
+            tem.pop_back();
+
+            event.sendMessage_.headerMap_.insert(std::make_pair("Group", tem));
+
+            Chatroom::GetInstance()->OfflineGroupClear(name);
+        }
+
+        //如果该用户有离线信息，离线信息会作为登录确认报文的内容
+        const auto& offline = Chatroom::GetInstance()->GetOffline();
+        auto it_offline = offline.find(name);
+        if(it_offline != offline.end()){
+            //说明有离线信息
+            const auto& sender_map = it_offline->second;
+            int sender_num = sender_map.size(); //sender个数
+            int offline_msg_num = 0;
+            auto& body = event.sendMessage_.body_;
+            for(auto& spec_sender : sender_map){
+                //把所有sender都遍历一遍
+                std::string path("./message/");
+                path += name;
+                path += ".jchat";
+                
+                std::vector<std::vector<std::string>> out;
+                ReadFile(path, out, spec_sender.second);
+                for(auto& spec_msg : out){
+                    //一个sender的一个特定信息
+                    body += "time: ";
+                    body += spec_msg[0];
+                    body += LINE_END;
+                    body += "sender: ";
+                    body += spec_msg[1];
+                    body += LINE_END;
+                    body += "receiver: ";
+                    body += spec_msg[2];
+                    body += LINE_END;
+                    body += "len: ";
+                    body += spec_msg[3];
+                    body += LINE_END;
+                    body += spec_msg[4];
+                    body += LINE_END;
+
+                    offline_msg_num++;
+                }
+
+                ClearFile(path);
+            }
+            event.sendMessage_.headerMap_.at("Content-Length") = std::to_string(body.size());
+            event.sendMessage_.headerMap_.insert(std::make_pair("Offline", std::to_string(offline_msg_num)));
+            Chatroom::GetInstance()->OfflineClear(name);
         }
 
         LOG(INFO, std::string("One user is signing in, name: ")+name);
@@ -272,7 +341,6 @@ void Protocol::BuildMessage(Event& event)
 
         LOG(INFO, std::string("Res headrs: ")+tmp);
     }
-    headers.emplace_back(LINE_END);
 
     //body已经被设置好，此时只需要发送即可
 }
@@ -343,6 +411,8 @@ void Protocol::AppendFile(const std::string& path, const std::vector<std::string
     fapp << in[3];
     fapp << in[4];
     fapp.close();
+
+    LOG(INFO, std::string("Append data to file: ")+path);
 }
 
 void Protocol::ClearFile(const std::string& path)
@@ -350,13 +420,15 @@ void Protocol::ClearFile(const std::string& path)
     if(IsFileExist(path)){
         std::fstream fclear;
         fclear.open(path, std::ios::out);
+
+        LOG(INFO, std::string("Clear file: ")+path);
     }
 }
 
-//如果需要发送错误报文，则设置ret为-1；正确发送通知报文，则设置ret为0，如果对方离线，则返回1
-Event& Protocol::SingleMessage(Event& event, int& ret)
+//对消息请求报文进行初步处理
+int Protocol::MessageHandler(Event& event, std::vector<std::string>& v_peers)
 {
-    //获取报头数据
+    //这里也要获取报头数据判断是否出错
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
     auto it_peer = header_map.find("Peer");
@@ -367,8 +439,7 @@ Event& Protocol::SingleMessage(Event& event, int& ret)
         event.sendMessage_.status_ = "401";
 
         LOG(WARNING, "Wrong formation");
-        ret  = -1;
-        return event;
+        return -1;
     }
     std::string sender_name = it_user->second;
     //判断是否登录
@@ -377,24 +448,71 @@ Event& Protocol::SingleMessage(Event& event, int& ret)
         event.sendMessage_.status_ = "403";
 
         LOG(WARNING, "Not sign in");
-        ret = -1;
-        return event;
+        return -1;
     }
 
-    std::string peer_name = it_peer->second;
+    std::string peers = it_peer->second;
+
+    //获取所有peer
+    Util::CutString(peers, v_peers, " ");
+    //判断peer用户是否存在
+    //为了方便起见，只要有一个接收peer不存在，直接返回402报文
+    for(auto peer : v_peers){
+        auto it = Chatroom::GetInstance()->GetUsers().find(peer);
+        if(it == Chatroom::GetInstance()->GetUsers().end()){
+            //用户不存在，返回402报文
+            event.sendMessage_.status_ = "402";
+
+            LOG(WARNING, "No such user");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+
+//离线设置is_offline为1，反之设为0
+Event& Protocol::SendMessage(Event& event, std::string peer_name, int& is_offline)
+{
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_time = header_map.find("Time");
+    auto it_content_len = header_map.find("Content-Length");
+
+    std::string sender_name = it_user->second;
     std::string time = it_time->second;
     int content_len = std::atoi(it_content_len->second.c_str());
-    
+
     auto it_online = Chatroom::GetInstance()->GetOnline().find(peer_name);
     if(it_online == Chatroom::GetInstance()->GetOnline().end()){
         //对方不在线
         //把消息存在文件中
         Chatroom::GetInstance()->OfflineInsert(peer_name, sender_name);
         
+        //文件名: peer_name.jchat
+        std::string path;
+        path += "./message/";
+        path += peer_name;
+        path += ".jchat";
+
+        //追加新的消息进入文件
+        std::vector<std::string> in;
+        in.resize(5);
+        in[0] += time;
+        in[0] += "\n";
+        in[1] += sender_name;
+        in[1] += "\n";
+        in[2] += peer_name;
+        in[2] += "\n";
+        in[3] += it_content_len->second;
+        in[3] += "\n";
+        in[4] += event.recvMessage_.body_;
+        AppendFile(path, in);
 
         //构建响应报文  
-        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "offline")) ;
-        ret = 1;
+        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right")) ;
+        is_offline = 1;
         return event;  
     }
     else{
@@ -404,26 +522,237 @@ Event& Protocol::SingleMessage(Event& event, int& ret)
 
         send_ev.sendMessage_.method_ = "INF";
         send_ev.sendMessage_.status_ = "150";
-        send_ev.sendMessage_.version_ = "CHAT\1.0";
+        send_ev.sendMessage_.version_ = VERSION;
 
         send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
         send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
         send_ev.sendMessage_.headerMap_.insert(std::make_pair("Receiver", peer_name));
-        send_ev.sendMessage_.body_ = std::move(event.recvMessage_.body_); //直接移动拷贝，原来的消息就不用了
+        send_ev.sendMessage_.body_ = event.recvMessage_.body_;
         send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(send_ev.sendMessage_.body_.size())));
 
         //构建成功响应
         //为了简单起见，默认不会失败，对方在线则直接转发并且发送响应
         //！！！这里可以改进
         event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+
+        LOG(INFO, std::string("Relay the message, sender: ")+sender_name+std::string(", receiver: ")+peer_name);
         
+        is_offline = 0;
         return send_ev;
     }    
 }
 
-int Protocol::GroupMessage(Event& event)
+void Protocol::CreateGroup(Event& event)
 {
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_others = header_map.find("Others");
+    auto it_group = header_map.find("Group");
+    auto it_content_len = header_map.find("Content-Length");
+    if(it_user == header_map.end() || it_others == header_map.end() || it_group == header_map.end() || it_content_len == header_map.end()){
+        //如果没找到User或Peer和Time
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong formation");
+        return;
+    }
+
+    std::string name = it_user->second;
+    //判断是否登录
+    if(!IsSignIn(name)){
+        //如果没登陆，直接返回403报文
+        event.sendMessage_.status_ = "403";
+
+        LOG(WARNING, "Not sign in");
+        return;
+    }
+
+    std::string group_name = it_group->second;
+    //判断是否群名重复
+    auto it_group_name = Chatroom::GetInstance()->GetGroups().find(group_name);
+    if(it_group_name != Chatroom::GetInstance()->GetGroups().end()){
+        //群名重复
+        event.sendMessage_.headerMap_.at("Return") = "wrong";
+        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "dup_group_name"));
+        
+        LOG(WARNING, "Duplicated group name");
+        return;
+    }
+
+    std::string others = it_others->second;
+    
+    std::vector<std::string> v_others;
+    Util::CutString(others, v_others, " ");
+    //判断用户是否存在
+    //为了方便起见，只要有一个不存在，直接返回402报文
+    for(auto one : v_others){
+        auto it = Chatroom::GetInstance()->GetUsers().find(one);
+        if(it == Chatroom::GetInstance()->GetUsers().end()){
+            //用户不存在，返回402报文
+            event.sendMessage_.status_ = "402";
+
+            LOG(WARNING, "No such user");
+            return;
+        }
+    }
+
+    v_others.push_back(name);
+    std::unordered_set<std::string> group_set;
+    for(auto one : v_others){
+        group_set.insert(one);
+    }
+
+    //服务器上增加该群聊信息
+    Chatroom::GetInstance()->GroupsInsert(group_name, group_set);
+
+    LOG(INFO, std::string("Create a group: ")+group_name);
+
+    v_others.pop_back();
+    //给其他人通知
+    for(auto one : v_others){
+        auto it_online = Chatroom::GetInstance()->GetOnline().find(one);
+        if(it_online == Chatroom::GetInstance()->GetOnline().end()){
+            //如果不在线，将需要通知的信息加入offlineGroups_中
+            Chatroom::GetInstance()->OfflineGroupInsert(one, group_name);
+
+        }
+        else{
+            //如果在线
+            int peer_sock = it_online->second;
+            Event& send_ev = event.pr_->GetEvent(peer_sock);
+
+            send_ev.sendMessage_.method_ = "INF";
+            send_ev.sendMessage_.status_ = "250";
+            send_ev.sendMessage_.version_ = VERSION;
+
+            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Group", group_name));
+            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", "0"));
+            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Others", others));
+        
+            //发送通知报文
+            Task task([&send_ev]{
+                SendHandler(send_ev);
+            });
+            ThreadPool::GetInstance()->AddTask(task);                     
+            
+        }
+    }
+}
+
+int Protocol::GroupMessageHandler(Event& event, std::vector<std::string>& v_members)
+{
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_group = header_map.find("Group");
+    auto it_time = header_map.find("Time");
+    auto it_content_len = header_map.find("Content-Length");
+    if(it_user == header_map.end() || it_group == header_map.end() || it_time == header_map.end() || it_content_len == header_map.end()){
+        //如果没找到User或Peer和Time
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong formation");
+        return -1;
+    }
+    std::string sender_name = it_user->second;
+    //判断是否登录
+    if(!IsSignIn(sender_name)){
+        //如果没登陆，直接返回403报文
+        event.sendMessage_.status_ = "403";
+
+        LOG(WARNING, "Not sign in");
+        return -1;
+    }
+
+    std::string group_name = it_group->second;
+    //判断组是否存在
+    auto it_groups = Chatroom::GetInstance()->GetGroups().find(group_name);
+    if(it_groups == Chatroom::GetInstance()->GetGroups().end()){
+        event.sendMessage_.headerMap_.at("Return") = "wrong";
+        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "no_such_group"));
+
+        LOG(WARNING, "No such group");
+        return -1;
+    }
+
+    //获取组中所有用户放入v_members
+    const auto& groups = Chatroom::GetInstance()->GetGroups();
+    auto other_set = groups.at(group_name);
+    for(auto other : other_set){
+        v_members.push_back(other);
+    }
+
     return 0;
+}
+
+Event& Protocol::SendGroupMessage(Event& event, std::string member, int& is_offline)
+{
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_time = header_map.find("Time");
+    auto it_group = header_map.find("Group");
+    auto it_content_len = header_map.find("Content-Length");
+
+    std::string sender_name = it_user->second;
+    std::string group_name = it_group->second;
+    std::string time = it_time->second;
+    int content_len = std::atoi(it_content_len->second.c_str());
+
+    auto it_online = Chatroom::GetInstance()->GetOnline().find(member);
+    if(it_online == Chatroom::GetInstance()->GetOnline().end()){
+        //对方不在线
+        //把消息存在文件中
+        Chatroom::GetInstance()->OfflineInsert(member, group_name);
+        
+        //文件名: member.jchat
+        std::string path;
+        path += "./message/";
+        path += member;
+        path += ".jchat";
+
+        //追加新的消息进入文件
+        std::vector<std::string> in;
+        in.resize(5);
+        in[0] += time;
+        in[0] += "\n";
+        in[1] += sender_name;
+        in[1] += "\n";
+        in[2] += group_name;
+        in[2] += "\n";
+        in[3] += it_content_len->second;
+        in[3] += "\n";
+        in[4] += event.recvMessage_.body_;
+        AppendFile(path, in);
+
+        //构建响应报文  
+        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right")) ;
+        is_offline = 1;
+        return event;  
+    }
+    else{
+        //对方在线，构建通知
+        int member_sock = it_online->second;
+        Event& send_ev = event.pr_->GetEvent(member_sock);
+
+        send_ev.sendMessage_.method_ = "INF";
+        send_ev.sendMessage_.status_ = "252";
+        send_ev.sendMessage_.version_ = VERSION;
+
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Group", group_name));
+        send_ev.sendMessage_.body_ = event.recvMessage_.body_;
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(send_ev.sendMessage_.body_.size())));
+
+        //构建成功响应
+        //为了简单起见，默认不会失败，对方在线则直接转发并且发送响应
+        //！！！这里可以改进
+        event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+
+        LOG(INFO, std::string("Relay the message, sender: ")+sender_name+std::string(", receiver: ")+member);
+        
+        is_offline = 0;
+        return send_ev;
+    }    
 }
 
 
@@ -580,38 +909,74 @@ void Protocol::ReqHandler(Event& event)
                 //单发消息请求，之后进行通知
                 event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "111";
-                int ret = 0;
-                Event& send_ev = SingleMessage(event,ret);
+                std::vector<std::string> v_peers;
+                int ret = MessageHandler(event, v_peers);
                 if(ret == 0){
-                    //直接发送通知报文转发消息
-                    Task task([&send_ev]{
-                        SendHandler(send_ev);
-                    });
-                    ThreadPool::GetInstance()->AddTask(task);
+                    //直接发送一个或多个通知报文转发消息
+                    int size = v_peers.size();
+                    for(int i = 0;i < size;i++){
+                        //多个peer，就转发多次
+                        int is_offline;
+                        Event& send_ev = SendMessage(event, v_peers[i], is_offline);
+                        if(is_offline == 0){
+                            Task task([&send_ev]{
+                                SendHandler(send_ev);
+                            });
+                            ThreadPool::GetInstance()->AddTask(task);    
+                        }
+                    }
                 }
-                //无论什么情况，都要发送响应
-                Task task([&event]{
-                    SendHandler(event);
-                });
-                ThreadPool::GetInstance()->AddTask(task);
-            }
-            else if(status == "120"){
-                //群发消息请求，之后进行通知
             }
             else{
                 event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "401";
-
-                //建立发送Res报文任务并加入任务队列
-                Task task([&event]{
-                    SendHandler(event);
-                });
-                ThreadPool::GetInstance()->AddTask(task);
             }
+            //无论什么情况，都要发送响应
+            Task task([&event]{
+                SendHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);
             break;
         }
         //群聊相关
         case '2':{
+            if(status == "210"){
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "211";
+                event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+                CreateGroup(event);
+            }
+            else if(status == "220"){
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "221";
+                event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+                std::vector<std::string> v_members;
+                int ret = GroupMessageHandler(event, v_members);
+                if(ret == 0){
+                    //直接发送一个或多个通知报文转发消息
+                    int size = v_members.size();
+                    for(int i = 0;i < size;i++){
+                        //多个组员，就转发多次
+                        int is_offline;
+                        Event& send_ev = SendGroupMessage(event, v_members[i], is_offline);
+                        if(is_offline == 0){
+                            Task task([&send_ev]{
+                                SendHandler(send_ev);
+                            });
+                            ThreadPool::GetInstance()->AddTask(task);    
+                        }
+                    }
+                }                
+            }
+            else{
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "401";             
+            }
+
+            Task task([&event]{
+                SendHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);   
             break;
         }
         //文件相关
