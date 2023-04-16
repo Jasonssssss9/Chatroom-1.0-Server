@@ -16,6 +16,16 @@
 #define VERSION "JCHAT/1.0"
 #define SIGN_UP_NAME "#####"
 
+
+struct PairHash
+{
+public:
+    size_t operator()(const std::pair<std::string, std::string>& p) const{ //注意一定是const的
+        std::hash<std::string> h;
+        return h(p.first);
+    }
+};
+
 //进行应用层的管理内容
 class Chatroom
 {
@@ -27,6 +37,7 @@ private:
     std::mutex offlineMtx_;
     std::mutex groupsMtx_;
     std::mutex oflgroupMtx_;
+    std::mutex oflfileMtx_;
 
     //易错，注意对一下所有对象操作时必须加锁，因为stl容器不能保证线程安全
 
@@ -45,13 +56,29 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, int>> offline_;
     //key为用户名，建立该用户到其所有离线消息的映射，value也为一个映射，first为发送者名，second为与first对应的离线消息个数
     //如果是群聊信息，那么first为群聊名称
-    //修改？？？实际上这里的first可以不要，第二个参数直接用一个int就行，但是太麻烦了，就不改了
     
     std::unordered_map<std::string, std::unordered_set<std::string>> groups_;
     //key为群聊名称，value为这个群聊中的所有人
 
     std::unordered_map<std::string, std::unordered_set<std::string>> offlineGroups_;
     //key为用户名，value为该用户离线时创建的包含该用户的群聊名称，需要由此通知该用户
+
+    std::unordered_map<std::string, std::unordered_set<std::pair<std::string, std::string>, PairHash>> offlineFiles_;
+    //key为用户名，value为该用户离线时创建的发送个该用户的文件，first为文件名，second为发送者&时间
+    //注意，这里的value一次存了两个信息，即sender_name和time，中间用$分隔
+    
+    //注意细节：unordered_set为哈希表实现，并且默认第二个模板参数为std::hash<T>
+    //std::hash<T>是一个类，其中有仿函数方法std::hash<T>(T t)，用来对参数t进行哈希，返回值为size_t类型
+    //但是std::hash默认实现的T类型只有常见的例如int，char，std::string等，没有实现std::pair
+    //因此这里如果要将std::unordered_set的类型设置为std::pair，必须手动传入第二个哈希函数参数
+    //这里直接实现一个struct PairHash，其中有仿函数，直接将pair.first作为std::hash<std::string>的参数即可
+    
+    //除此之外，还有一个非常容易忽略的问题，那就是自己写的仿函数必须是const的，不然就会编译出错
+    //疑问？？？为什么？这里的理解对不对？
+    //不加const，用该类型unordered_set创建一个对象set，以及一个pair，当调用set.insert(pair)时就会报错
+    //因为insert加入pair时一定会调用哈希函数，但是这里的哈希函数是const的，而内层自己写的PairHash仿函数又不是const的
+    //这样就会报错
+    //参考博客：http://www.360doc.com/content/11/1102/15/7828500_161101031.shtml
 
     Chatroom()
     {}
@@ -232,6 +259,38 @@ public:
         std::unique_lock<std::mutex> u_mtx(oflgroupMtx_);
         offlineGroups_.erase(name);
     }
+
+    const std::unordered_map<std::string ,std::unordered_set<std::pair<std::string, std::string>, PairHash>>& GetOfflineFiles()
+    {
+        return offlineFiles_;
+    }
+
+    void OfflineFilesInsert(std::string name, std::string file_name, std::string sender_name, std::string time)
+    {
+        std::string sender_time = sender_name;
+        sender_time += "$";
+        sender_time += time;
+        const std::pair<std::string, std::string> pair = std::make_pair(file_name, sender_time);
+
+        std::unique_lock<std::mutex> u_mtx(oflfileMtx_);
+        auto it = offlineFiles_.find(name);
+        if(it == offlineFiles_.end()){
+            //当前还没有该name
+            std::unordered_set<std::pair<std::string, std::string>, PairHash> set;
+            set.insert(pair);
+            offlineFiles_.insert(std::make_pair(name, set));
+        }
+        else{
+            //当前已经有该name
+            it->second.insert(pair);
+        }
+    }
+
+    void OfflineFilesErase(std::string name)
+    {
+        std::unique_lock<std::mutex> u_mtx(oflfileMtx_);
+        offlineFiles_.erase(name);
+    }
 };
 
 class Protocol
@@ -263,6 +322,9 @@ private:
     static void CreateGroup(Event& event);
     static int GroupMessageHandler(Event& event, std::vector<std::string>& v_peers);
     static Event& SendGroupMessage(Event& event, std::string peer, int& is_offline);
+
+    static void UploadFile(Event& event);
+    static void DownloadFile(Event& event);
 
     static void ReqHandler(Event& event);
     static void ResHandler(Event& events);

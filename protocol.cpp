@@ -158,7 +158,8 @@ void Protocol::SignIn(Event& event)
         const auto& offline_groups = Chatroom::GetInstance()->GetOfflineGroup();
         auto it_group = offline_groups.find(name);
         if(it_group != offline_groups.end()){
-            //说明有群聊创建信息
+            //说明有群聊创建信息，格式: 
+            //Group: 402$jason$zjx 408$jason$jack ...\r\n
             std::string tem;
             for(auto group_name : it_group->second){
                 //每一个创建的群聊都要考虑
@@ -179,6 +180,26 @@ void Protocol::SignIn(Event& event)
             event.sendMessage_.headerMap_.insert(std::make_pair("Group", tem));
 
             Chatroom::GetInstance()->OfflineGroupClear(name);
+        }
+
+        //如果该用户有发送文件的离线信息，离线信息会作为登录确认报文的内容
+        const auto& offline_files = Chatroom::GetInstance()->GetOfflineFiles();
+        auto  it_files = offline_files.find(name);
+        if(it_files != offline_files.end()){
+            //说明有离线文件，格式：
+            //Files: file_name1&sender_name1$time ...\r\n
+            std::string tem;
+            for(auto file : it_files->second){
+                tem += file.first;
+                tem += "$";
+                tem += file.second;
+                tem += " ";
+            }
+            tem.pop_back();
+
+            event.sendMessage_.headerMap_.insert(std::make_pair("Files", tem));
+
+            Chatroom::GetInstance()->OfflineFilesErase(name);
         }
 
         //如果该用户有离线信息，离线信息会作为登录确认报文的内容
@@ -755,6 +776,155 @@ Event& Protocol::SendGroupMessage(Event& event, std::string member, int& is_offl
     }    
 }
 
+void Protocol::UploadFile(Event& event)
+{
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_peer = header_map.find("Peer");
+    auto it_time = header_map.find("Time");
+    auto it_content_len = header_map.find("Content-Length");
+    auto it_file_name = header_map.find("File-Name");
+    if(it_user == header_map.end() || it_peer == header_map.end() || it_time == header_map.end() || it_content_len == header_map.end() || it_file_name == header_map.end()){
+        //如果没找到User或Peer和Time
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong formation");
+        return;
+    }
+
+    std::string sender_name = it_user->second;
+    std::string peer_name = it_peer->second;
+    std::string time = it_time->second;
+    std::string file_name = it_file_name->second;
+    int file_len = std::atoi(it_content_len->second.c_str());
+    //注意，这里用int类型来接收文件大小，可能不够，为了简单先这么写
+    const std::string& body = event.recvMessage_.body_;
+
+    //判断是否登录
+    if(!IsSignIn(sender_name)){
+        //如果没登陆，直接返回403报文
+        event.sendMessage_.status_ = "403";
+
+        LOG(WARNING, "Not sign in");
+        return;
+    }
+
+    //创建新的文件，将文件内容写入新创建的文件
+    //需要先在./files目录下创建名称为 sender_name-receiver_name 的目录，之后在该目录中存储新创建的文件
+
+    //先创建目录
+    std::string new_dir("./files/");
+    new_dir += sender_name;
+    new_dir += "-";
+    new_dir += peer_name;
+    if(!IsFileExist(new_dir)){
+        mkdir(new_dir.c_str(), 0777); //这里默认设置权限为0777，并且为了方便起见后面代码中不删除它
+    }
+    
+    //如果当前文件和目录中的文件重名，则返回“文件名重复”响应报文
+    std::string path(new_dir);
+    path += "/";
+    path += file_name;
+    if(IsFileExist(path)){
+        event.sendMessage_.headerMap_.at("Return") = "wrong";
+        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "dup_file_name"));
+
+        LOG(WARING, "Dup_file_name");
+        return;
+    }
+
+    //不重复，则创建该文件，并且向文件中写入内容
+    std::fstream fapp;
+    fapp.open(path, std::ios::app);
+    fapp << body;
+    fapp.close();
+
+    //注意，为了简单起见只给一个人发送文件，如果要给多个人发，代码逻辑和群发消息完全一样
+    //函数返回send_ev，在ReqHandler中循环继续处理，分别构建任务
+    //这里只给一个人发，因此直接在这里建立任务即可，逻辑和创建群聊类似
+    auto it_online = Chatroom::GetInstance()->GetOnline().find(peer_name);
+    if(it_online == Chatroom::GetInstance()->GetOnline().end()){
+        //对方不在线
+        Chatroom::GetInstance()->OfflineFilesInsert(peer_name, file_name, sender_name, time);
+    }
+    else{
+        //对方在线，构建通知
+        int peer_sock = it_online->second;
+        Event& send_ev = event.pr_->GetEvent(peer_sock);
+
+        send_ev.sendMessage_.method_ = "INF";
+        send_ev.sendMessage_.status_ = "320";
+        send_ev.sendMessage_.version_ = VERSION;
+
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", "0"));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("File-Name", file_name));
+        send_ev.sendMessage_.headerMap_.insert(std::make_pair("File-Size", std::to_string(file_len)));
+        
+        LOG(INFO, std::string("Upload file, sender: ")+sender_name+std::string(", receiver: ")+peer_name+std::string(", file_name: ")+file_name);
+    
+        Task task([&send_ev]{
+            SendHandler(send_ev);
+        });
+        ThreadPool::GetInstance()->AddTask(task); 
+    }    
+}
+
+void Protocol::DownloadFile(Event& event)
+{
+    auto& header_map = event.recvMessage_.headerMap_;
+    auto it_user = header_map.find("User");
+    auto it_content_len = header_map.find("Content-Length");
+    auto it_file_name = header_map.find("File-Name");
+    auto it_sender = header_map.find("Sender");
+    if(it_user == header_map.end() || it_sender == header_map.end() || it_content_len == header_map.end() || it_file_name == header_map.end()){
+        //如果没找到User或Peer和Time
+        event.sendMessage_.status_ = "401";
+
+        LOG(WARNING, "Wrong formation");
+        return;
+    }
+
+    std::string sender_name = it_sender->second;
+    std::string receiver_name = it_user->second;
+    std::string file_name = it_file_name->second;
+    int file_len = std::atoi(it_content_len->second.c_str());
+
+    //判断是否登录
+    if(!IsSignIn(receiver_name)){
+        //如果没登陆，直接返回403报文
+        event.sendMessage_.status_ = "403";
+
+        LOG(WARNING, "Not sign in");
+        return;
+    }
+
+    //构建下载响应
+    //读文件
+    std::string path("./files/");
+    path += sender_name;
+    path += "-";
+    path += receiver_name;
+    path += "/";
+    path += file_name;
+
+    if(!IsFileExist(path)){
+        event.sendMessage_.headerMap_.insert("Wrong", "no_such_file");
+
+        LOG(WARNING, "No such file");
+        return;
+    }
+
+    std::fstream fread;
+    fread.open(path, std::ios::in);
+    fread >> event.sendMessage_.body_;
+    fread.close();
+
+    event.sendMessage_.headerMap_.at("Content-Length") =  std::to_string(event.sendMessage_.body_.size());
+
+    LOG(INFO, std::string("Download file, file_name: ")+file_name);
+}
 
 //获取和解析请求报文的初始行，报头并且获取正文
 //之后建立新的任务，加入任务队列
@@ -981,6 +1151,27 @@ void Protocol::ReqHandler(Event& event)
         }
         //文件相关
         case '3':{
+            if(status == "310"){
+                //发送文件请求
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "311";
+                event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
+                UploadFile(event);
+            }
+            else if(status == "330"){
+                //接收文件请求
+                event.sendMessage_.method_ = "INF";
+                event.sendMessage_.status_ = "331";
+                DownloadFile(event);
+            }
+            else{
+                event.sendMessage_.method_ = "RES";
+                event.sendMessage_.status_ = "401";
+            }
+            Task task([&event]{
+                SendHandler(event);
+            });
+            ThreadPool::GetInstance()->AddTask(task);
             break;
         }
         default:{
@@ -992,7 +1183,11 @@ void Protocol::ReqHandler(Event& event)
 
 void Protocol::ResHandler(Event& event)
 {
+    //为了简单起见，这里不做任何特殊判断，直接清除event内容
+    //增加！！！根据响应报文内容做出相应处理
 
+    ClearEvent(event);
+    LOG(INFO, "ResHandler");
 }
 
 
