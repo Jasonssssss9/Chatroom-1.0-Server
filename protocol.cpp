@@ -910,7 +910,7 @@ void Protocol::DownloadFile(Event& event)
     path += file_name;
 
     if(!IsFileExist(path)){
-        event.sendMessage_.headerMap_.insert("Wrong", "no_such_file");
+        event.sendMessage_.headerMap_.insert(std::make_pair("Wrong", "no_such_file"));
 
         LOG(WARNING, "No such file");
         return;
