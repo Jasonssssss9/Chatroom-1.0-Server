@@ -1160,7 +1160,7 @@ void Protocol::ReqHandler(Event& event)
             }
             else if(status == "330"){
                 //接收文件请求
-                event.sendMessage_.method_ = "INF";
+                event.sendMessage_.method_ = "RES";
                 event.sendMessage_.status_ = "331";
                 DownloadFile(event);
             }
