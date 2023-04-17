@@ -3,7 +3,7 @@
 
 //获取初始行，自动去除结尾\r\n
 //粘包返回-1，正常则返回读取到的初始行大小，包括\r\n
-int Protocol::GetIniLine(Event& event)
+int Protocol::GetIniLine(Event<ChatMessage>& event)
 {
     int ret = Util::Readline(event.inbuffer_, event.recvMessage_.iniLine_);
     if(ret == -1){
@@ -17,7 +17,7 @@ int Protocol::GetIniLine(Event& event)
 
 //获取报头中的一行，也可能是空行，自动去除结尾\r\n
 //粘包返回-1；正常则返回读取到的报头总大小，包括\r\n与空行大小；如果读到空行；返回-2
-int Protocol::GetHeader(Event& event)
+int Protocol::GetHeader(Event<ChatMessage>& event)
 {
     std::string tem_string;
     int ret = Util::Readline(event.inbuffer_, tem_string);
@@ -54,7 +54,7 @@ int Protocol::GetBody(int len, const std::string& in, std::string& out)
 }
 
 //注册
-void Protocol::SignUp(Event& event)
+void Protocol::SignUp(Event<ChatMessage>& event)
 {   
     //直接给登录状态分配一个用户名为"#####"的短连接
     Chatroom::GetInstance()->ShortSockInsert(event.sock_, SIGN_UP_NAME);
@@ -101,7 +101,7 @@ void Protocol::SignUp(Event& event)
 }
 
 //登录
-void Protocol::SignIn(Event& event)
+void Protocol::SignIn(Event<ChatMessage>& event)
 {
     //确定对方输入的用户名和密码
     std::string name;
@@ -258,7 +258,7 @@ void Protocol::SignIn(Event& event)
 }
 
 //登出
-void Protocol::SignOut(Event& event)
+void Protocol::SignOut(Event<ChatMessage>& event)
 {
     //在这里只需要处理登录管理的问题，连接的管理是底层连接管理的问题，这里不需要处理
     //理论上连接都会直接由客户端关闭，因此底层会自动关闭连接
@@ -334,7 +334,7 @@ bool Protocol::IsSignIn(std::string name)
 }
 
 //构建报文
-void Protocol::BuildMessage(Event& event)
+void Protocol::BuildMessage(Event<ChatMessage>& event)
 {
     auto& ini_line = event.sendMessage_.iniLine_;
     auto& headers = event.sendMessage_.headers_;
@@ -367,7 +367,7 @@ void Protocol::BuildMessage(Event& event)
 }
 
 //清空event的inbuffer,recvMessage,sendMessage
-void Protocol::ClearEvent(Event& event)
+void Protocol::ClearEvent(Event<ChatMessage>& event)
 {
     event.inbuffer_.clear();
     event.recvMessage_.Clear();
@@ -447,7 +447,7 @@ void Protocol::ClearFile(const std::string& path)
 }
 
 //对消息请求报文进行初步处理
-int Protocol::MessageHandler(Event& event, std::vector<std::string>& v_peers)
+int Protocol::MessageHandler(Event<ChatMessage>& event, std::vector<std::string>& v_peers)
 {
     //这里也要获取报头数据判断是否出错
     auto& header_map = event.recvMessage_.headerMap_;
@@ -494,7 +494,7 @@ int Protocol::MessageHandler(Event& event, std::vector<std::string>& v_peers)
 
 
 //离线设置is_offline为1，反之设为0
-Event& Protocol::SendMessage(Event& event, std::string peer_name, int& is_offline)
+InformMsg<ChatMessage> Protocol::SendMessage(Event<ChatMessage>& event, std::string peer_name, int& is_offline)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -504,6 +504,8 @@ Event& Protocol::SendMessage(Event& event, std::string peer_name, int& is_offlin
     std::string sender_name = it_user->second;
     std::string time = it_time->second;
     int content_len = std::atoi(it_content_len->second.c_str());
+
+    InformMsg<ChatMessage> im;
 
     auto it_online = Chatroom::GetInstance()->GetOnline().find(peer_name);
     if(it_online == Chatroom::GetInstance()->GetOnline().end()){
@@ -534,22 +536,25 @@ Event& Protocol::SendMessage(Event& event, std::string peer_name, int& is_offlin
         //构建响应报文  
         event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right")) ;
         is_offline = 1;
-        return event;  
+        return im;
     }
     else{
         //对方在线，构建通知
         int peer_sock = it_online->second;
-        Event& send_ev = event.pr_->GetEvent(peer_sock);
+        im.sock_ = peer_sock;
+        im.pr_ = event.pr_;
 
-        send_ev.sendMessage_.method_ = "INF";
-        send_ev.sendMessage_.status_ = "150";
-        send_ev.sendMessage_.version_ = VERSION;
+        Event<ChatMessage>& send_ev = event.pr_->GetEvent(peer_sock);
 
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Receiver", peer_name));
-        send_ev.sendMessage_.body_ = event.recvMessage_.body_;
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(send_ev.sendMessage_.body_.size())));
+        im.message_.method_ = "INF";
+        im.message_.status_ = "150";
+        im.message_.version_ = VERSION;
+
+        im.message_.headerMap_.insert(std::make_pair("Time", time));
+        im.message_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        im.message_.headerMap_.insert(std::make_pair("Receiver", peer_name));
+        im.message_.body_ = event.recvMessage_.body_;
+        im.message_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(im.message_.body_.size())));
 
         //构建成功响应
         //为了简单起见，默认不会失败，对方在线则直接转发并且发送响应
@@ -559,11 +564,11 @@ Event& Protocol::SendMessage(Event& event, std::string peer_name, int& is_offlin
         LOG(INFO, std::string("Relay the message, sender: ")+sender_name+std::string(", receiver: ")+peer_name);
         
         is_offline = 0;
-        return send_ev;
+        return im;
     }    
 }
 
-void Protocol::CreateGroup(Event& event)
+void Protocol::CreateGroup(Event<ChatMessage>& event)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -640,27 +645,27 @@ void Protocol::CreateGroup(Event& event)
         else{
             //如果在线
             int peer_sock = it_online->second;
-            Event& send_ev = event.pr_->GetEvent(peer_sock);
+            InformMsg<ChatMessage> im;
+            im.sock_ = peer_sock;
+            im.pr_ = event.pr_;
 
-            send_ev.sendMessage_.method_ = "INF";
-            send_ev.sendMessage_.status_ = "250";
-            send_ev.sendMessage_.version_ = VERSION;
+            Event<ChatMessage>& send_ev = event.pr_->GetEvent(peer_sock);
 
-            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Group", group_name));
-            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", "0"));
-            send_ev.sendMessage_.headerMap_.insert(std::make_pair("Others", others));
-        
-            //发送通知报文
-            Task task([&send_ev]{
-                SendHandler(send_ev);
-            });
-            ThreadPool::GetInstance()->AddTask(task);                     
+            im.message_.method_ = "INF";
+            im.message_.status_ = "250";
+            im.message_.version_ = VERSION;
+
+            im.message_.headerMap_.insert(std::make_pair("Group", group_name));
+            im.message_.headerMap_.insert(std::make_pair("Content-Length", "0"));
+            im.message_.headerMap_.insert(std::make_pair("Others", others));
             
+            //加入消息队列
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddMessage(std::move(im));
         }
     }
 }
 
-int Protocol::GroupMessageHandler(Event& event, std::vector<std::string>& v_members)
+int Protocol::GroupMessageHandler(Event<ChatMessage>& event, std::vector<std::string>& v_members)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -705,7 +710,7 @@ int Protocol::GroupMessageHandler(Event& event, std::vector<std::string>& v_memb
     return 0;
 }
 
-Event& Protocol::SendGroupMessage(Event& event, std::string member, int& is_offline)
+InformMsg<ChatMessage> Protocol::SendGroupMessage(Event<ChatMessage>& event, std::string member, int& is_offline)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -717,6 +722,8 @@ Event& Protocol::SendGroupMessage(Event& event, std::string member, int& is_offl
     std::string group_name = it_group->second;
     std::string time = it_time->second;
     int content_len = std::atoi(it_content_len->second.c_str());
+
+    InformMsg<ChatMessage> im;
 
     auto it_online = Chatroom::GetInstance()->GetOnline().find(member);
     if(it_online == Chatroom::GetInstance()->GetOnline().end()){
@@ -747,36 +754,36 @@ Event& Protocol::SendGroupMessage(Event& event, std::string member, int& is_offl
         //构建响应报文  
         event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right")) ;
         is_offline = 1;
-        return event;  
+        return im;
     }
     else{
         //对方在线，构建通知
         int member_sock = it_online->second;
-        Event& send_ev = event.pr_->GetEvent(member_sock);
+        im.sock_ = member_sock;
+        im.pr_ = event.pr_;
 
-        send_ev.sendMessage_.method_ = "INF";
-        send_ev.sendMessage_.status_ = "252";
-        send_ev.sendMessage_.version_ = VERSION;
+        Event<ChatMessage>& send_ev = event.pr_->GetEvent(member_sock);
 
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Group", group_name));
-        send_ev.sendMessage_.body_ = event.recvMessage_.body_;
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(send_ev.sendMessage_.body_.size())));
+        im.message_.method_ = "INF";
+        im.message_.status_ = "252";
+        im.message_.version_ = VERSION;
 
-        //构建成功响应
-        //为了简单起见，默认不会失败，对方在线则直接转发并且发送响应
-        //！！！这里可以改进
+        im.message_.headerMap_.insert(std::make_pair("Time", time));
+        im.message_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        im.message_.headerMap_.insert(std::make_pair("Group", group_name));
+        im.message_.body_ = event.recvMessage_.body_;
+        im.message_.headerMap_.insert(std::make_pair("Content-Length", std::to_string(im.message_.body_.size())));
+
         event.sendMessage_.headerMap_.insert(std::make_pair("Return", "right"));
 
         LOG(INFO, std::string("Relay the message, sender: ")+sender_name+std::string(", receiver: ")+member);
         
         is_offline = 0;
-        return send_ev;
+        return im;
     }    
 }
 
-void Protocol::UploadFile(Event& event)
+void Protocol::UploadFile(Event<ChatMessage>& event)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -850,28 +857,32 @@ void Protocol::UploadFile(Event& event)
     else{
         //对方在线，构建通知
         int peer_sock = it_online->second;
-        Event& send_ev = event.pr_->GetEvent(peer_sock);
+        InformMsg<ChatMessage> im;
+        im.sock_ = peer_sock;
+        im.pr_ = event.pr_;
 
-        send_ev.sendMessage_.method_ = "INF";
-        send_ev.sendMessage_.status_ = "320";
-        send_ev.sendMessage_.version_ = VERSION;
+        Event<ChatMessage>& send_ev = event.pr_->GetEvent(peer_sock);
 
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Time", time));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Sender", sender_name));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("Content-Length", "0"));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("File-Name", file_name));
-        send_ev.sendMessage_.headerMap_.insert(std::make_pair("File-Size", std::to_string(file_len)));
+        im.message_.method_ = "INF";
+        im.message_.status_ = "320";
+        im.message_.version_ = VERSION;
+
+        im.message_.headerMap_.insert(std::make_pair("Time", time));
+        im.message_.headerMap_.insert(std::make_pair("Content-Length", "0"));
+        im.message_.headerMap_.insert(std::make_pair("Sender", sender_name));
+        im.message_.headerMap_.insert(std::make_pair("File-Name", file_name));
+        im.message_.headerMap_.insert(std::make_pair("File-Size", std::to_string(file_len)));
+        
+        //加入消息队列
+        ThreadPool<ChatMessage, Protocol>::GetInstance()->AddMessage(std::move(im));
         
         LOG(INFO, std::string("Upload file, sender: ")+sender_name+std::string(", receiver: ")+peer_name+std::string(", file_name: ")+file_name);
-    
-        Task task([&send_ev]{
-            SendHandler(send_ev);
-        });
-        ThreadPool::GetInstance()->AddTask(task); 
+
     }    
 }
 
-void Protocol::DownloadFile(Event& event)
+
+void Protocol::DownloadFile(Event<ChatMessage>& event)
 {
     auto& header_map = event.recvMessage_.headerMap_;
     auto it_user = header_map.find("User");
@@ -918,7 +929,9 @@ void Protocol::DownloadFile(Event& event)
 
     std::fstream fread;
     fread.open(path, std::ios::in);
-    fread >> event.sendMessage_.body_;
+    std::stringstream ss;
+    ss << fread.rdbuf();
+    event.sendMessage_.body_ = ss.str();
     fread.close();
 
     event.sendMessage_.headerMap_.at("Content-Length") =  std::to_string(event.sendMessage_.body_.size());
@@ -928,7 +941,7 @@ void Protocol::DownloadFile(Event& event)
 
 //获取和解析请求报文的初始行，报头并且获取正文
 //之后建立新的任务，加入任务队列
-void Protocol::GetPerseMessage(Event& event)
+void Protocol::GetPerseMessage(Event<ChatMessage>& event)
 {
     //在这里进行应用层业务处理的第一步：分解报文，处理粘包问题，并构建任务，交给线程池处理
     //粘包问题的解决：
@@ -1010,13 +1023,13 @@ void Protocol::GetPerseMessage(Event& event)
             Task task([&event]{
                 ReqHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);
         }
         else if(event.recvMessage_.method_ == "RES"){
             Task task([&event]{
                 ResHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);        
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);        
         }
         else{
             LOG(ERROR, "Wrong method");
@@ -1027,7 +1040,7 @@ void Protocol::GetPerseMessage(Event& event)
 
 
 //处理REQ报文
-void Protocol::ReqHandler(Event& event)
+void Protocol::ReqHandler(Event<ChatMessage>& event)
 {
     LOG(INFO, "Request handler");
 
@@ -1070,7 +1083,7 @@ void Protocol::ReqHandler(Event& event)
             Task task([&event]{
                 SendHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);
             break;
         }
         //消息相关
@@ -1087,12 +1100,9 @@ void Protocol::ReqHandler(Event& event)
                     for(int i = 0;i < size;i++){
                         //多个peer，就转发多次
                         int is_offline;
-                        Event& send_ev = SendMessage(event, v_peers[i], is_offline);
+                        InformMsg<ChatMessage> im = SendMessage(event, v_peers[i], is_offline);
                         if(is_offline == 0){
-                            Task task([&send_ev]{
-                                SendHandler(send_ev);
-                            });
-                            ThreadPool::GetInstance()->AddTask(task);    
+                            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddMessage(std::move(im));
                         }
                     }
                 }
@@ -1105,7 +1115,7 @@ void Protocol::ReqHandler(Event& event)
             Task task([&event]{
                 SendHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);
             break;
         }
         //群聊相关
@@ -1128,12 +1138,9 @@ void Protocol::ReqHandler(Event& event)
                     for(int i = 0;i < size;i++){
                         //多个组员，就转发多次
                         int is_offline;
-                        Event& send_ev = SendGroupMessage(event, v_members[i], is_offline);
+                        InformMsg<ChatMessage> im = SendGroupMessage(event, v_members[i], is_offline);
                         if(is_offline == 0){
-                            Task task([&send_ev]{
-                                SendHandler(send_ev);
-                            });
-                            ThreadPool::GetInstance()->AddTask(task);    
+                            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddMessage(std::move(im));
                         }
                     }
                 }                
@@ -1146,7 +1153,7 @@ void Protocol::ReqHandler(Event& event)
             Task task([&event]{
                 SendHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);   
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);   
             break;
         }
         //文件相关
@@ -1171,7 +1178,7 @@ void Protocol::ReqHandler(Event& event)
             Task task([&event]{
                 SendHandler(event);
             });
-            ThreadPool::GetInstance()->AddTask(task);
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);
             break;
         }
         default:{
@@ -1181,7 +1188,7 @@ void Protocol::ReqHandler(Event& event)
     }
 }
 
-void Protocol::ResHandler(Event& event)
+void Protocol::ResHandler(Event<ChatMessage>& event)
 {
     //为了简单起见，这里不做任何特殊判断，直接清除event内容
     //增加！！！根据响应报文内容做出相应处理
@@ -1191,7 +1198,7 @@ void Protocol::ResHandler(Event& event)
 }
 
 
-void Protocol::SendHandler(Event& event)
+void Protocol::SendHandler(Event<ChatMessage>& event)
 {
     LOG(INFO, "Send response");
 

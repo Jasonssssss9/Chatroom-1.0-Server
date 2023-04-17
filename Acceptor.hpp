@@ -16,7 +16,7 @@
 class Acceptor
 {
 public:
-    static void Accept(Event& listen_event)
+    static void Accept(Event<ChatMessage>& listen_event)
     {
         //listen_sock就绪，代表可能有多个连接就绪，必须while循环保证所有连接都被accept
         sockaddr_in peer;
@@ -28,7 +28,7 @@ public:
                 Sock::SetNonBlock(sock);
 
                 //给新的sock建立Event，绑定回调函数，并且加入Reactor模型
-                Event new_event(sock, listen_event.pr_);
+                Event<ChatMessage> new_event(sock, listen_event.pr_);
                 new_event.RegisterRecv(Handler::Receiver);
                 new_event.RegisterSend(Handler::Sender);
                 new_event.RegisterError(Handler::Errorer);

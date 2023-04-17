@@ -2,6 +2,7 @@
 #include "Reactor.hpp"
 #include "TCPServer.hpp"
 #include "Acceptor.hpp"
+#include "Protocol.hpp"
 #include "Log.hpp"
 #include <iostream>
 
@@ -11,11 +12,11 @@ class ChatroomServer
 {
 private:
     uint16_t port_;
-    Reactor* pr_;
+    Reactor<ChatMessage>* pr_;
 public:
     ChatroomServer(uint16_t port = PORT):port_(port)
     {
-        pr_ = new Reactor();
+        pr_ = new Reactor<ChatMessage>();
     }
 
     void Loop()
@@ -25,7 +26,7 @@ public:
         LOG(INFO, std::string("Listen_sock is set: ")+std::to_string(listen_sock));
 
         //创建Event对象
-        Event ev(listen_sock, pr_);
+        Event<ChatMessage> ev(listen_sock, pr_);
         //listen_sock只需要监测读就绪事件，并且回调函数为Acceptor
         ev.RegisterRecv(Acceptor::Accept);
 

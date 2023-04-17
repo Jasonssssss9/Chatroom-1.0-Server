@@ -90,7 +90,7 @@ private:
 
 public:
     //event对应读事件
-    static void Receiver(Event& event)
+    static void Receiver(Event<ChatMessage>& event)
     {
         //读任务直接交给RecvHelper处理，结果直接读到inbuffer里
         //如果返回值为-1说明读出错，交给异常处理回调，之后退出
@@ -110,11 +110,11 @@ public:
         Task task([&]{
             Protocol::GetPerseMessage(event);
         });
-        ThreadPool::GetInstance()->AddTask(task);
+        ThreadPool<ChatMessage, Protocol>::GetInstance()->AddTask(task);
     }
 
     //event对应写事件
-    static void Sender(Event& event)
+    static void Sender(Event<ChatMessage>& event)
     {
         //写任务直接交给SendHelper处理，将outbuffer里的内容直接读走
         //如果返回值为-1说明写出错，交给异常处理回调，之后退出
@@ -128,6 +128,10 @@ public:
         else if (ret == 1){ //outbuffer发送完毕，关闭写
             (event.pr_)->EnableReadWrite(event.sock_, true, false);
             LOG(INFO, std::string("Send successfully, sock: ")+std::to_string(event.sock_));
+
+            //设置长连接的占用为false，即设置当前长连接已不被占用
+            //如果为短链接，则不会有任何操作
+            ThreadPool<ChatMessage, Protocol>::GetInstance()->SetCurrSockFalse(event.sock_);
         }
         else if (ret == 0){ //outbuffer本轮发送完毕，等下一次写事件就绪，还要再发
             (event.pr_)->EnableReadWrite(event.sock_, true, true);
@@ -136,7 +140,7 @@ public:
     }
 
     //event对应异常事件，直接关闭连接
-    static void Errorer(Event& event)
+    static void Errorer(Event<ChatMessage>& event)
     {
         const auto& short_sock_map = Chatroom::GetInstance()->GetShortSock();
         const auto& long_sock_map = Chatroom::GetInstance()->GetLongSock();

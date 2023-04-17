@@ -1,6 +1,6 @@
 #pragma once
 #include "Log.hpp"
-#include "ChatMessage.hpp"
+// #include "ChatMessage.hpp"
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <cassert>
@@ -12,20 +12,22 @@
 
 #define MAX_NUM 128
 
+template<class T>
 class Reactor;
 
 //Event表示一个连接事件结构体
 //Event就是一个socket+缓冲区+读/写/异常回调方法的集合
+template<class T>
 struct Event
 {
 public:
     int sock_; //标识当前事件的socket
-    Reactor* pr_; //指向当前Event被加入到的Reactor模型
+    Reactor<T>* pr_; //指向当前Event被加入到的Reactor模型
 
     //读/写/异常回调函数，类型一定是 void(Event&)，参数就是当前时间的Event
-    std::function<void(Event&)> recvCallback_;
-    std::function<void(Event&)> sendCallback_;
-    std::function<void(Event&)> errorCallback_;
+    std::function<void(Event<T>&)> recvCallback_;
+    std::function<void(Event<T>&)> sendCallback_;
+    std::function<void(Event<T>&)> errorCallback_;
 
     std::string inbuffer_;  //读缓冲区
     std::string outbuffer_; //写缓冲区
@@ -33,30 +35,32 @@ public:
     //修改！！！：可以将Event改成模板类，并且把ChatMessage作为模板参数
     //好处是，recvMessage_的内容实际上和具体的协议有关，而这个Reactor服务器理论上是和协议解耦的
     //如果这里直接放一个ChatMessage类型的成员变量，那么完全起不到解耦的效果
-    ChatMessage recvMessage_;
-    ChatMessage sendMessage_;
+    // ChatMessage recvMessage_;
+    // ChatMessage sendMessage_;
+    T recvMessage_;
+    T sendMessage_;
 
 public:
-    Event(int sock = -1, Reactor* pr = nullptr):sock_(sock), pr_(pr)
+    Event(int sock = -1, Reactor<T>* pr = nullptr):sock_(sock), pr_(pr)
     {}
 
     //注册回调函数，即给该Event绑定特定的回调函数
     //每次将新的sock加入reactor时，必须设置注册特定的回调函数
 
     //注册读回调
-    void RegisterRecv(std::function<void(Event&)> recv_tem)
+    void RegisterRecv(std::function<void(Event<T>&)> recv_tem)
     {
         recvCallback_ = recv_tem;
     }
 
     //注册写回调
-    void RegisterSend(std::function<void(Event&)> send_tem)
+    void RegisterSend(std::function<void(Event<T>&)> send_tem)
     {
         sendCallback_ = send_tem;
     }
 
     //注册异常回调
-    void RegisterError(std::function<void(Event&)> err_tem)
+    void RegisterError(std::function<void(Event<T>&)> err_tem)
     {
         errorCallback_ = err_tem;
     }
@@ -68,11 +72,12 @@ public:
 
 //Reactor模型，包括两部分：(1)一个Epoll模型；(2)自己进行连接管理的eventsMap_
 //Reactor模型是整个服务器的核心，完成连接管理，就绪事件监测以及对就绪事件的分派
+template<class T>
 class Reactor
 {
 private:
     int epfd_; //Reactor模型对应的Epoll模型
-    std::unordered_map<int, Event> eventsMap_; 
+    std::unordered_map<int, Event<T>> eventsMap_; 
     // Reactor模型自己对连接的管理，表示一个socket到其对应的连接事件Event的映射
 
 public:
@@ -97,7 +102,7 @@ public:
         }
     }
 
-    Event& GetEvent(int sock)
+    Event<T>& GetEvent(int sock)
     {
         auto it = eventsMap_.find(sock);
         assert(it != eventsMap_.end());
@@ -106,7 +111,7 @@ public:
 
     //将一个事件ev加入到当前Reactor模型中，events为需要监测的事件
     //成功返回false，失败返回true
-    bool AddEvent(const Event& ev, uint32_t events)
+    bool AddEvent(const Event<T>& ev, uint32_t events)
     {
         //加入Epoll模型
         epoll_event epoll_ev;

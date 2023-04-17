@@ -2,10 +2,12 @@
 #include "Log.hpp"
 #include "Reactor.hpp"
 #include "ThreadPool.hpp"
+#include "Util.hpp"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <string>
+#include <sstream>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
@@ -15,6 +17,71 @@
 #define LINE_END "\r\n"
 #define VERSION "JCHAT/1.0"
 #define SIGN_UP_NAME "#####"
+
+struct ChatMessage
+{
+public:
+    //一个报文中的四个部分
+    std::string iniLine_;  //初始行
+    std::vector<std::string> headers_; //报头
+    std::string blank_; //空行
+    std::string body_;  //正文
+
+    //解析初始行
+    std::string method_;
+    std::string status_;
+    std::string version_;
+
+    //解析报头
+    std::unordered_map<std::string, std::string> headerMap_;
+
+    ChatMessage() = default;
+    ~ChatMessage() = default;
+    ChatMessage(const ChatMessage&) = default;
+    ChatMessage(ChatMessage&&) = default;
+    ChatMessage& operator=(const ChatMessage&) = default;
+    ChatMessage& operator=(ChatMessage&&) = default;
+    //关键是指定自动生成移动构造和移动拷贝
+
+public:
+    //解析初始行，从iniLine_得到method_，status_和version_
+    void ParseIniLine()
+    {
+        std::stringstream ss(iniLine_);
+        ss >> method_ >> status_ >> version_;
+
+        //for test
+        LOG(INFO, std::string("method: ")+method_);
+        LOG(INFO, std::string("status: ")+status_);
+        LOG(INFO, std::string("version: ")+version_);
+    }
+
+    //解析报头，从headers_得到headerMap_
+    int ParseHeader()
+    {
+        for(auto e : headers_){
+            std::vector<std::string> tv;
+            if(!Util::CutString(e, tv, ": ")){
+                return -1;
+            }
+            headerMap_.insert(std::make_pair(tv[0], tv[1]));
+            LOG(INFO, tv[0]+std::string(": ")+tv[1]);
+        }
+        return 0;
+    }
+
+    void Clear()
+    {
+        method_.clear();
+        status_.clear();
+        version_.clear();
+        headers_.clear();
+        iniLine_.clear();
+        body_.clear();
+        blank_.clear();
+        headerMap_.clear();
+    }
+};
 
 
 struct PairHash
@@ -79,6 +146,7 @@ private:
     //因为insert加入pair时一定会调用哈希函数，但是这里的哈希函数是const的，而内层自己写的PairHash仿函数又不是const的
     //这样就会报错
     //参考博客：http://www.360doc.com/content/11/1102/15/7828500_161101031.shtml
+
 
     Chatroom()
     {}
@@ -296,41 +364,41 @@ public:
 class Protocol
 {
 private:
-    static int GetIniLine(Event& event);
-    static int GetHeader(Event& event);
+    static int GetIniLine(Event<ChatMessage>& event);
+    static int GetHeader(Event<ChatMessage>& event);
     static int GetBody(int len, const std::string& in, std::string& out);
 
-    static void SignUp(Event& event);
-    static void SignIn(Event& event);
-    static void SignOut(Event& event);
+    static void SignUp(Event<ChatMessage>& event);
+    static void SignIn(Event<ChatMessage>& event);
+    static void SignOut(Event<ChatMessage>& event);
 
     static bool IsUserExist(std::string name);
     static std::pair<bool, std::string> GetPassword(std::string name);
     static bool IsSignIn(std::string name);
 
-    static void BuildMessage(Event& event);
-    static void ClearEvent(Event& event);
+    static void BuildMessage(Event<ChatMessage>& event);
+    static void ClearEvent(Event<ChatMessage>& event);
 
     static bool IsFileExist(const std::string&);
     static bool ReadFile(const std::string& path, std::vector<std::vector<std::string>>& out, int n);
     static void AppendFile(const std::string& path, const std::vector<std::string>& in);
     static void ClearFile(const std::string& path);
 
-    static int MessageHandler(Event& event, std::vector<std::string>& v_peers);
-    static Event& SendMessage(Event& event, std::string peer_name, int& is_offline);
+    static int MessageHandler(Event<ChatMessage>& event, std::vector<std::string>& v_peers);
+    static InformMsg<ChatMessage> SendMessage(Event<ChatMessage>& event, std::string peer_name, int& is_offline);
 
-    static void CreateGroup(Event& event);
-    static int GroupMessageHandler(Event& event, std::vector<std::string>& v_peers);
-    static Event& SendGroupMessage(Event& event, std::string peer, int& is_offline);
+    static void CreateGroup(Event<ChatMessage>& event);
+    static int GroupMessageHandler(Event<ChatMessage>& event, std::vector<std::string>& v_peers);
+    static InformMsg<ChatMessage> SendGroupMessage(Event<ChatMessage>& event, std::string member, int& is_offline);
 
-    static void UploadFile(Event& event);
-    static void DownloadFile(Event& event);
+    static void UploadFile(Event<ChatMessage>& event);
+    static void DownloadFile(Event<ChatMessage>& event);
 
-    static void ReqHandler(Event& event);
-    static void ResHandler(Event& events);
-
-    static void SendHandler(Event& event);
+    static void ReqHandler(Event<ChatMessage>& event);
+    static void ResHandler(Event<ChatMessage>& events);
 
 public:
-    static void GetPerseMessage(Event& event);
+    static void GetPerseMessage(Event<ChatMessage>& event);
+
+    static void SendHandler(Event<ChatMessage>& event);
 };
